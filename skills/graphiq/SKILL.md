@@ -55,7 +55,7 @@ Use `graphiq setup --harness <name>` to target a specific harness (claude-code, 
 | Neighborhood map | `topology` | Boundary edges, hubs, clusters |
 | Index health | `status` | File/symbol/edge counts |
 | Fix stale index | `upgrade_index` | Rebuild artifacts |
-| Nuclear option | `index` | Full reindex (expensive) |
+| Refresh source index | `index` | Incremental after source edits; `--force-reindex` for deliberate full rebuild |
 | Wipe and start over | `clear` | Delete the index, fresh empty DB |
 | Which harnesses are wired | `sync` | Verify attach + write registry |
 | Find installed harnesses | `discover` | Scan the system |
@@ -73,9 +73,10 @@ Use `graphiq setup --harness <name>` to target a specific harness (claude-code, 
 
 ### Find something
 
-1. `search` with a name, description, error message, or file path fragment
-2. If the top result is right, `context` to read its source
-3. If results are wrong, `doctor` to check index health, then `upgrade_index`
+1. `search` with a name, focused behavior, relationship question, or distinctive error phrase
+2. For a known file, use MCP `file_filter` or CLI `--file`; use `rg --files`/`find` for path discovery rather than treating a path fragment as an exact file lookup
+3. Verify the top result's name and file before using `context`; inspect its source
+4. If results are wrong, `doctor` to check index health, then `upgrade_index`
 
 ### Change code safely
 
@@ -83,7 +84,7 @@ Use `graphiq setup --harness <name>` to target a specific harness (claude-code, 
 2. `context` to read source and understand its neighborhood (callers, callees, tests)
 3. `blast` to trace forward (what depends on this) and backward (what it depends on)
 4. Make the change
-5. `upgrade_index` if you changed many files
+5. `index` the project to pick up changed source files (incremental); use `doctor` then `upgrade_index` if artifacts are stale
 
 ### Understand how code connects
 
@@ -94,17 +95,18 @@ Use `graphiq setup --harness <name>` to target a specific harness (claude-code, 
 
 ### Search results seem off
 
-1. `doctor` — check which artifacts are stale or missing
-2. `upgrade_index` — rebuild them
-3. `search` again
+1. If source files changed since indexing, rerun `index` to pick them up (it skips unchanged files)
+2. `doctor` — check whether derived artifacts are stale or missing
+3. `upgrade_index` — rebuild artifacts only when the diagnosis calls for it
+4. `search` again
 
 ## Tool Details
 
 **briefing** — Architecture overview: languages, subsystems with cohesion scores, public API surface, hub symbols. Use `compact: true` for a shorter version with top subsystems and API only.
 
-**search** — Primary exploration tool. Accepts symbol names, natural language ("rate limit middleware"), error messages, file path fragments. Returns ranked results with scores, file locations, signatures, and source previews. Use `file_filter` to narrow scope. Use `top_k` up to 50 for broad searches.
+**search** — Primary exploration tool. Accepts symbol names, natural language ("rate limit middleware"), error messages, and path fragments. Returns ranked results with scores, file locations, signatures, and source previews. Use MCP `file_filter` or CLI `--file` to scope a query to a known file; use `rg --files` for exact path discovery. Use `top_k` up to 50 for broad searches.
 
-**context** — Full source code for a symbol plus its structural neighborhood: callers, callees, contained members, parents, and tests. Use after `search` to go deeper on a result.
+**context** — Full source code for a symbol plus its structural neighborhood: callers, callees, contained members, parents, and tests. Use after `search` to go deeper on a result. MCP `context` accepts `file_filter` to select a same-named symbol; the CLI `context` command does not.
 
 **blast** — Change impact analysis. Traces forward (what this symbol affects) and backward (what depends on it). Essential before refactors and breaking changes. Increase `depth` (up to 10) for wider radius.
 
@@ -124,9 +126,42 @@ Use `graphiq setup --harness <name>` to target a specific harness (claude-code, 
 
 **doctor** — Artifact health check. Reports stale or missing index artifacts and explains any search quality degradation.
 
-**upgrade_index** — Rebuild stale artifacts (cruncher, fingerprints). Faster than full reindex. Call after `doctor` reports issues or after significant code changes.
+**upgrade_index** — Rebuild stale derived artifacts (cruncher, fingerprints). Call when `doctor` reports issues; it does not replace indexing source files changed by code edits.
 
-**index** — Full reindex of the project. Expensive — only call when the database is empty, corrupted, or significantly out of date. Normal code changes don't require this.
+**index** — Index source files incrementally, skipping unchanged files. Re-run after source edits to refresh search; use `--force-reindex` only for a deliberate full rebuild.
+
+## Reliable CLI Search
+
+### Choose the right project index
+
+From a Git checkout, use its own database explicitly so a command run from another working directory cannot silently select a different project:
+
+```bash
+ROOT="$(git rev-parse --show-toplevel)"
+DB="$ROOT/.graphiq/graphiq.db"
+graphiq status --db "$DB"
+```
+
+For an external/removable volume, confirm the checkout is mounted before indexing: `test -e "$ROOT/.git" && git -C "$ROOT" rev-parse --show-toplevel`. Check that `.graphiq/` is ignored (`git check-ignore "$ROOT/.graphiq/graphiq.db"`) before indexing; do not accidentally add the database to source control.
+
+If no database exists, run `graphiq index "$ROOT" --db "$DB"`. Re-run the same `index` command after source changes; indexing is incremental and skips unchanged files. Use `doctor` and `upgrade-index` for artifact health/rebuilds, not as a substitute for updating the source index.
+
+### Search, expand, verify
+
+Start with one focused natural-language behavior query, then a second query using a likely symbol/API or an explicit relationship (for example, `callers of authenticate`). Use `--debug` if the selected query family or ranking looks surprising. Keep result counts small; broad queries, generic names, mocks, tests, large constants/localization data, and path-only queries can produce noisy or oversized results.
+
+```bash
+graphiq search "How does a renderer request reach the backend?" --db "$DB" --top 8
+graphiq search "BackendBridge request" --db "$DB" --file app/src/main/backend-bridge.ts --top 5
+graphiq context "requestBackend" --db "$DB"
+graphiq blast "requestBackend" --db "$DB" --depth 1
+```
+
+`--file` constrains search to a known file; it is not a path-existence query. For exact text, exhaustive matches, literal routes/errors/config keys, or exact file discovery, use `rg`/`rg --files` alongside GraphIQ.
+
+`context` and `blast` look up indexed symbol names; in the CLI, an ambiguous name can resolve to the first match. Check the returned context heading/location against the intended search hit before trusting it. The CLI has no `--file` disambiguator for `context`/`blast`; open the search hit's file and line directly if names collide. The MCP `context` tool supports `file_filter` for disambiguation. Graph edges may be imports, references, containment, or inferred relationships rather than runtime calls, so verify behavior in source and tests.
+
+Before `impact` on working-tree edits, refresh the source index if it predates those edits. Treat affected symbols and likely tests as leads and verify them directly.
 
 ## CLI Quick Reference
 
