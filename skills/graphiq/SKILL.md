@@ -106,7 +106,7 @@ Use `graphiq setup --harness <name>` to target a specific harness (claude-code, 
 
 **search** — Primary exploration tool. Accepts symbol names, natural language ("rate limit middleware"), error messages, and path fragments. Returns ranked results with scores, file locations, signatures, and source previews. Use MCP `file_filter` or CLI `--file` to scope a query to a known file; use `rg --files` for exact path discovery. Use `top_k` up to 50 for broad searches.
 
-**context** — Full source code for a symbol plus its structural neighborhood: callers, callees, contained members, parents, and tests. Use after `search` to go deeper on a result. MCP `context` accepts `file_filter` to select a same-named symbol; the CLI `context` command does not.
+**context** — Full source code for a symbol plus its structural neighborhood: callers, callees, contained members, parents, and tests. Use after `search` to go deeper on a result. MCP `context` accepts `file_filter` to narrow same-named candidates; the CLI `context` command does not.
 
 **blast** — Change impact analysis. Traces forward (what this symbol affects) and backward (what depends on it). Essential before refactors and breaking changes. Increase `depth` (up to 10) for wider radius.
 
@@ -157,9 +157,9 @@ graphiq context "requestBackend" --db "$DB"
 graphiq blast "requestBackend" --db "$DB" --depth 1
 ```
 
-`--file` constrains search to a known file; it is not a path-existence query. For exact text, exhaustive matches, literal routes/errors/config keys, or exact file discovery, use `rg`/`rg --files` alongside GraphIQ.
+`--file` constrains search to a known file; it is not a path-existence query. Its value must match a case-sensitive substring of the indexed repo-relative path: an absolute path, leading `./`, or wrong case can silently produce `No results`, indistinguishable from a genuine miss. Check spelling with `rg --files` before concluding a symbol is absent. For exact text, exhaustive matches, literal routes/errors/config keys, or exact file discovery, use `rg`/`rg --files` alongside GraphIQ.
 
-`context` and `blast` look up indexed symbol names; in the CLI, an ambiguous name can resolve to the first match. Check the returned context heading/location against the intended search hit before trusting it. The CLI has no `--file` disambiguator for `context`/`blast`; open the search hit's file and line directly if names collide. The MCP `context` tool supports `file_filter` for disambiguation. Graph edges may be imports, references, containment, or inferred relationships rather than runtime calls, so verify behavior in source and tests.
+`context` and `blast` look up indexed symbol names; in the CLI, an ambiguous name resolves to the first match and emits a `Found N symbols named ... using first` notice on stderr (which can be hidden if stderr is suppressed or separated from stdout). CLI `context` stdout has only a line range, not the selected file path; compare that range with the search hit, or run `blast` to see the resolved file in its heading. If still ambiguous, open the intended search hit's file and line directly. The CLI has no `--file` disambiguator for `context`/`blast`; the MCP `context` tool supports `file_filter` to narrow same-named candidates. Graph edges may be imports, references, containment, or inferred relationships rather than runtime calls, so verify behavior in source and tests.
 
 Before `impact` on working-tree edits, refresh the source index if it predates those edits. Treat affected symbols and likely tests as leads and verify them directly.
 
